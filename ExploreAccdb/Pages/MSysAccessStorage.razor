@@ -1,0 +1,164 @@
+﻿@page "/MSysAccessStorage"
+@using Kavod.Vba.Compression
+@using LibAccdb1
+@using System.Text.Json
+@using System.Text.RegularExpressions
+@using System.Buffers.Binary
+@using System.Text
+@inject IJSRuntime _js
+
+<PageTitle>ExploreAccdb - MSysAccessStorage</PageTitle>
+
+<p>Choose .accdb file:</p>
+
+<p><InputFile OnChange="LoadAccdb" @ref="_fileRef" /></p>
+
+<ShowLoader Task="_loading">
+    @if (_vbaIsGood == true)
+    {
+        <div class="alert alert-info">
+            <strong>VBA 分析結果</strong> VBA は正常のようです。<code>dir</code> と <code>_VBA_PROJECT</code> が見つかりました。<br />
+        </div>
+    }
+    @if (_vbaIsGood == false)
+    {
+        <div class="alert alert-danger">
+            <strong>VBA 分析結果</strong> VBA は破損しています。<code>dir</code> または <code>_VBA_PROJECT</code> が見つかりません。修復はできません。バックアップから正常なファイルを復元するようにお勧めいたします。<br />
+        </div>
+    }
+
+    <p>アクション <button class="btn btn-outline-primary" @onclick="_downloadVba">VBA 抽出</button></p>
+
+    <table class="table table-hover">
+        <thead>
+            <tr>
+                <th>ParentId</th>
+                <th>Id</th>
+                <th>Type</th>
+                <th>Name</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in _items)
+            {
+                <tr>
+                    <td>@item.ParentId</td>
+                    <td>@item.Id</td>
+                    <td>@item.Type</td>
+                    <td>@item.Name</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <p>FileTree:</p>
+    <pre>@_ones</pre>
+</ShowLoader>
+
+@code {
+    private Task? _loading;
+    private InputFile? _fileRef;
+    private IEnumerable<MdbJsonEntry> _items = Enumerable.Empty<MdbJsonEntry>();
+    private bool? _vbaIsGood;
+    private string _ones = "";
+    private Func<Task> _downloadVba = async () => { };
+
+    private async Task LoadAccdbAsync(ElementReference inputFileElement)
+    {
+        _vbaIsGood = null;
+
+        var MSysAccessStorage = (await _js.InvokeAsync<IEnumerable<string>>(
+            "convertAccdbTableToJsonLines",
+            "MSysAccessStorage",
+            inputFileElement
+        ))
+            .Select(line => JsonSerializer.Deserialize<MdbJsonEntry>(line))
+            .ToArray();
+
+        _items = MSysAccessStorage!;
+        StateHasChanged();
+
+        {
+            var fileTree = new List<string>();
+
+            var vbaFiles = new Dictionary<string, string>();
+
+            void Walk(MdbJsonEntry[] mSysAccessStorage, long parentId, int depth, string path)
+            {
+                foreach (var entry in mSysAccessStorage.Where(it => it.ParentId == parentId && it.Id != parentId))
+                {
+                    Walk(mSysAccessStorage, entry.Id, depth + 1, $"{path}/{entry.Name}");
+
+                    fileTree.Add($"{path}/{entry.Name}");
+
+                    if (path == "/VBA/VBAProject/VBA")
+                    {
+                        try
+                        {
+                            vbaFiles.Add(
+                                $"{entry.Name!}.txt",
+                                Decompress(Convert.FromBase64String(entry.Lv!.Binary!))
+                            );
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    }
+                }
+            }
+
+            Walk(MSysAccessStorage!, 1, 0, "");
+
+            var isVbaModule = new Regex("^/VBA/VBAProject/VBA/[A-Z_]{28}$"); // TPBQSGFLDTPHDEYBATXSBJOXWUZM
+
+            var hasDir = fileTree.Any(it => it == "/VBA/VBAProject/VBA/dir");
+            var hasVbaProject = fileTree.Any(it => it == "/VBA/VBAProject/VBA/_VBA_PROJECT");
+            var hasVbaModule = fileTree.Any(it => isVbaModule.IsMatch(it));
+
+            if (hasVbaModule)
+            {
+                _vbaIsGood = hasDir && hasVbaProject;
+                StateHasChanged();
+            }
+
+            _ones = string.Join("\n", fileTree);
+
+            _downloadVba = async () =>
+            {
+                var zip = new MemoryStream();
+                using (var arc = new System.IO.Compression.ZipArchive(zip, System.IO.Compression.ZipArchiveMode.Create, true))
+                {
+                    foreach (var pair in vbaFiles)
+                    {
+                        var entry = arc.CreateEntry(pair.Key);
+                        using var stream = entry.Open();
+                        var bytes = Encoding.GetEncoding(932).GetBytes(pair.Value);
+                        stream.Write(bytes);
+                    }
+                }
+                zip.Position = 0;
+                await _js.InvokeVoidAsync(
+                    "downloadFileFromStream",
+                    "vba.zip",
+                    new DotNetStreamReference(zip)
+                );
+            };
+        }
+    }
+
+    private string Decompress(byte[] binFile)
+    {
+        var offsetToCompressed = BinaryPrimitives.ReadUInt16LittleEndian(binFile.AsSpan(0x1D, 2)) + 6;
+        var compressedBody = binFile.AsSpan(offsetToCompressed).ToArray();
+        var vba = VbaCompression.Decompress(compressedBody);
+        var text = Encoding.GetEncoding(932).GetString(vba);
+        return text;
+    }
+
+    private void LoadAccdb(InputFileChangeEventArgs e)
+    {
+        _loading = LoadAccdbAsync(_fileRef?.Element ?? throw new NullReferenceException());
+        StateHasChanged();
+    }
+}

@@ -1,0 +1,60 @@
+﻿@page "/MSysObjects"
+@using LibAccdb1
+@using System.Text.Json
+@inject IJSRuntime _js
+
+<PageTitle>ExploreAccdb - MSysObjects</PageTitle>
+
+<p>Choose .accdb file:</p>
+
+<p><InputFile OnChange="LoadAccdb" @ref="_fileRef" /></p>
+
+<ShowLoader Task="_loading">
+    <table class="table table-hover">
+        <thead>
+            <tr>
+                <th>ParentId</th>
+                <th>Id</th>
+                <th>Type</th>
+                <th>Name</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in _items)
+            {
+                <tr>
+                    <td>@item.ParentId</td>
+                    <td>@item.Id</td>
+                    <td>@item.Type</td>
+                    <td>@item.Name</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</ShowLoader>
+
+@code {
+    private Task? _loading;
+    private InputFile? _fileRef;
+    private IEnumerable<MdbJsonEntry> _items = Enumerable.Empty<MdbJsonEntry>();
+
+    private async Task LoadAccdbAsync(ElementReference inputFileElement)
+    {
+        var MSysAccessStorage = (await _js.InvokeAsync<IEnumerable<string>>(
+            "convertAccdbTableToJsonLines",
+            "MSysObjects",
+            inputFileElement
+        ))
+            .Select(line => JsonSerializer.Deserialize<MdbJsonEntry>(line))
+            .ToArray();
+
+        _items = MSysAccessStorage!;
+        StateHasChanged();
+    }
+
+    private void LoadAccdb(InputFileChangeEventArgs e)
+    {
+        _loading = LoadAccdbAsync(_fileRef?.Element ?? throw new NullReferenceException());
+        StateHasChanged();
+    }
+}

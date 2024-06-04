@@ -1,0 +1,77 @@
+﻿@if (false) { }
+else if (_state.Status == Status.Loading)
+{
+    <text>Loading...</text>
+}
+else if (_state.Status == Status.Failure)
+{
+    <div>
+        <strong>エラー</strong>
+        <p><pre>@_state.ErrorMessage</pre></p>
+    </div>
+}
+else if (_state.Status == Status.Successful)
+{
+    @ChildContent
+}
+
+@code {
+    [Parameter]
+    public Task? Task { get; set; }
+
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    private enum Status
+    {
+        None,
+        Loading,
+        Successful,
+        Failure,
+    }
+
+    private record State(Status Status, Task? Task, string ErrorMessage);
+
+    private State _state = new State(Status.None, null, "");
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_state.Task != Task || firstRender)
+        {
+            if (Task == null)
+            {
+                _state = new State(Status.None, Task, "");
+
+                StateHasChanged();
+            }
+            else
+            {
+                _state = new State(Status.Loading, Task, "");
+
+                StateHasChanged();
+
+                if (Task != null)
+                {
+                    try
+                    {
+                        await Task;
+
+                        if (_state.Task == Task)
+                        {
+                            _state = new State(Status.Successful, Task, "");
+                            StateHasChanged();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_state.Task == Task)
+                        {
+                            _state = new State(Status.Failure, Task, ex + "");
+                            StateHasChanged();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
